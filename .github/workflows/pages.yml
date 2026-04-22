@@ -39,6 +39,7 @@ jobs:
           cp golden.png dist/
           cp light-rain.png dist/
           cp dusk.png dist/
+          cp -r fonts dist/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
