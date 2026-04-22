@@ -215,16 +215,26 @@
       }
 
       .sidebar {
+        grid-row: 2;
         border-right: 0;
-        border-bottom: 1px solid var(--line);
+        border-top: 1px solid var(--line);
       }
 
       .stage {
-        padding: 12px;
+        grid-row: 1;
+        padding: 0;
       }
 
-      .svg-frame,
+      .svg-frame {
+        width: 100%;
+        min-height: 70vh;
+        border-right: 0;
+        border-left: 0;
+        border-radius: 0;
+      }
+
       object {
+        width: 100%;
         min-height: 70vh;
       }
     }
