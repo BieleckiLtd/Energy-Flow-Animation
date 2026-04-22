@@ -16,9 +16,9 @@
   const SUPPLY_LABELS = new Set(['from-grid', 'from-battery', 'from-solar']);
   const HEAD_TRAVEL_DURATION = 1.98;
   const SUPPLY_SPINOFF_SEMAPHORE = 1.5;
-  const DEFAULT_LENGTH = 0.28;
+  const DEMAND_CREATION_DELAY = 0.15; // compensate size of the inverter
+  const DEFAULT_LENGTH = 0.28; 
   const SNAKE_SEGMENTS = 7;
-  const SNAKE_INSTANCES = 8;
   const flowStates = new Map();
 
   const svgObject = document.getElementById('energySvg');
@@ -33,10 +33,11 @@
   let pathUnitsPerSecond = 1;
   let snakeReferenceLength = 1;
   let groupTiming = {
-    demandDurations: [],
+    demandVisibleDuration: 0,
     hasDemand: false,
     hasSupply: false,
     supplyHeadEnd: HEAD_TRAVEL_DURATION,
+    supplyVisibleDuration: 0,
   };
 
   const getLabel = (node) =>
@@ -109,6 +110,33 @@
     const length = Math.max(sourcePath.getTotalLength(), 1);
     const pulseGroup = svg.ownerDocument.createElementNS(NS, 'g');
     const isForward = FORWARD_FLOW_LABELS.has(label);
+    const segmentTemplate = sourcePath.cloneNode(false);
+
+    segmentTemplate.setAttribute('d', isForward ? sourcePath.getAttribute('d') : buildReversedPathData(sourcePath, length));
+    segmentTemplate.removeAttribute('id');
+    segmentTemplate.removeAttribute('inkscape:label');
+
+    const createInstance = () => {
+      const instanceGroup = svg.ownerDocument.createElementNS(NS, 'g');
+      const segments = [];
+
+      instanceGroup.style.display = 'none';
+      pulseGroup.appendChild(instanceGroup);
+
+      for (let index = 0; index < SNAKE_SEGMENTS; index += 1) {
+        const segment = segmentTemplate.cloneNode(false);
+        const fade = index / (SNAKE_SEGMENTS - 1);
+
+        segment.style.display = 'inline';
+        segment.style.filter = 'none';
+        segment.style.opacity = `${0.12 + fade * 0.88}`;
+        segment.style.pointerEvents = 'none';
+        instanceGroup.appendChild(segment);
+        segments.push({ element: segment, fadeIndex: index });
+      }
+
+      return { group: instanceGroup, segments };
+    };
     const instances = [];
 
     pulseGroup.setAttribute('aria-hidden', 'true');
@@ -119,32 +147,8 @@
     pulseGroup.style.opacity = '1';
     pulseGroup.style.pointerEvents = 'none';
 
-    for (let instanceIndex = 0; instanceIndex < SNAKE_INSTANCES; instanceIndex += 1) {
-      const instanceGroup = svg.ownerDocument.createElementNS(NS, 'g');
-      const segments = [];
-
-      instanceGroup.style.display = 'none';
-      pulseGroup.appendChild(instanceGroup);
-
-      for (let index = 0; index < SNAKE_SEGMENTS; index += 1) {
-        const segment = sourcePath.cloneNode(false);
-        const fade = index / (SNAKE_SEGMENTS - 1);
-
-        segment.setAttribute('d', isForward ? sourcePath.getAttribute('d') : buildReversedPathData(sourcePath, length));
-        segment.removeAttribute('id');
-        segment.removeAttribute('inkscape:label');
-        segment.style.display = 'inline';
-        segment.style.filter = 'none';
-        segment.style.opacity = `${0.12 + fade * 0.88}`;
-        segment.style.pointerEvents = 'none';
-        instanceGroup.appendChild(segment);
-        segments.push({ element: segment, fadeIndex: index });
-      }
-
-      instances.push({ group: instanceGroup, segments });
-    }
-
     return {
+      createInstance,
       element: pulseGroup,
       endOffset: -length,
       instances,
@@ -164,12 +168,25 @@
     });
   };
 
+  const ensureInstance = (state, instanceIndex) => {
+    while (state.instances.length <= instanceIndex) {
+      state.instances.push(state.createInstance());
+    }
+
+    return state.instances[instanceIndex];
+  };
+
+  const clearDurationFor = (state) => {
+    const pulseLength = Math.max(snakeReferenceLength * state.snakeLength, 1);
+    const segmentLength = Math.max(pulseLength / SNAKE_SEGMENTS * 1.45, 1);
+    return (state.length + pulseLength + segmentLength) / pathUnitsPerSecond;
+  };
+
   const renderInstance = (state, instance, elapsed) => {
     const pulseLength = Math.max(snakeReferenceLength * state.snakeLength, 1);
     const segmentLength = Math.max(pulseLength / SNAKE_SEGMENTS * 1.45, 1);
     const segmentGap = state.length + pulseLength + segmentLength;
-    const travelDistance = state.length + pulseLength + segmentLength;
-    const clearDuration = travelDistance / pathUnitsPerSecond;
+    const clearDuration = clearDurationFor(state);
 
     if (elapsed < 0 || elapsed > clearDuration) {
       instance.group.style.display = 'none';
@@ -190,55 +207,48 @@
   };
 
   const buildGroupStartTimes = (elapsedSeconds) => {
-    const supplyStarts = [];
+    const supplyWaveStarts = [];
     const demandStarts = [];
-    const demandCompletions = [];
-    let hasHeldSupplySpinoff = false;
-    let semaphoreUntil = 0;
 
     const addSupplyStart = (startTime) => {
       if (!groupTiming.hasSupply || startTime > elapsedSeconds) return;
 
-      supplyStarts.push(startTime);
-      semaphoreUntil = startTime + SUPPLY_SPINOFF_SEMAPHORE;
+      supplyWaveStarts.push(startTime);
+      const supplyArrivalTime = startTime + groupTiming.supplyHeadEnd;
 
       if (groupTiming.hasDemand) {
-        const demandStart = startTime + groupTiming.supplyHeadEnd;
-        demandStarts.push(demandStart);
-        groupTiming.demandDurations.forEach((duration) => {
-          demandCompletions.push(demandStart + duration);
-        });
+        demandStarts.push(supplyArrivalTime + DEMAND_CREATION_DELAY);
       }
     };
 
     if (groupTiming.hasSupply) {
-      addSupplyStart(0);
-    } else if (groupTiming.hasDemand) {
-      demandStarts.push(0);
-    }
+      const supplyInterval = Math.max(groupTiming.supplyHeadEnd, SUPPLY_SPINOFF_SEMAPHORE);
+      const lookbackDuration = Math.max(
+        groupTiming.supplyVisibleDuration,
+        groupTiming.supplyHeadEnd + DEMAND_CREATION_DELAY + groupTiming.demandVisibleDuration
+      );
+      const firstVisibleWaveIndex = Math.max(0, Math.floor((elapsedSeconds - lookbackDuration) / supplyInterval));
 
-    while (demandCompletions.length) {
-      demandCompletions.sort((a, b) => a - b);
-      const completionTime = demandCompletions.shift();
-
-      if (completionTime > elapsedSeconds) break;
-      if (completionTime >= semaphoreUntil) {
-        hasHeldSupplySpinoff = false;
-        addSupplyStart(completionTime);
-      } else if (!hasHeldSupplySpinoff) {
-        hasHeldSupplySpinoff = true;
-        demandCompletions.push(semaphoreUntil);
+      for (
+        let startTime = firstVisibleWaveIndex * supplyInterval;
+        startTime <= elapsedSeconds;
+        startTime += supplyInterval
+      ) {
+        addSupplyStart(startTime);
       }
+    } else if (groupTiming.hasDemand) {
+      demandStarts.push(DEMAND_CREATION_DELAY);
     }
 
     return {
       demand: demandStarts
         .filter((startTime) => startTime <= elapsedSeconds)
-        .sort((a, b) => b - a)
-        .slice(0, SNAKE_INSTANCES),
-      supply: supplyStarts
-        .sort((a, b) => b - a)
-        .slice(0, SNAKE_INSTANCES),
+        .filter((startTime) => startTime >= elapsedSeconds - groupTiming.demandVisibleDuration)
+        .sort((a, b) => b - a),
+      supply: supplyWaveStarts
+        .filter((startTime) => startTime <= elapsedSeconds)
+        .filter((startTime) => startTime >= elapsedSeconds - groupTiming.supplyVisibleDuration)
+        .sort((a, b) => b - a),
     };
   };
 
@@ -256,10 +266,16 @@
       const startTimes = state.timingGroup === 'supply'
         ? groupStartTimes.supply
         : groupStartTimes.demand;
+      const startOffset = state.timingGroup === 'supply'
+        ? Math.max(groupTiming.supplyHeadEnd - state.travelDuration, 0)
+        : 0;
 
       startTimes.forEach((startTime) => {
-        const instance = state.instances[instanceIndex];
-        if (instance) renderInstance(state, instance, elapsedSeconds - startTime);
+        const instanceElapsed = elapsedSeconds - startTime - startOffset;
+        if (instanceElapsed < 0) return;
+
+        const instance = ensureInstance(state, instanceIndex);
+        renderInstance(state, instance, instanceElapsed);
         instanceIndex += 1;
       });
 
@@ -279,13 +295,20 @@
     const visibleSupply = visibleAnimatedStates.filter((state) => state.timingGroup === 'supply');
     const visibleDemand = visibleAnimatedStates.filter((state) => state.timingGroup === 'demand');
     const supplyHeadEnd = visibleSupply.length ? Math.max(...visibleSupply.map(travelDurationFor)) : 0;
+    const supplyVisibleDuration = visibleSupply.length
+      ? Math.max(...visibleSupply.map((state) => Math.max(supplyHeadEnd - travelDurationFor(state), 0) + clearDurationFor(state)))
+      : 0;
+    const demandVisibleDuration = visibleDemand.length
+      ? Math.max(...visibleDemand.map(clearDurationFor))
+      : 0;
     const cycleDuration = supplyHeadEnd || HEAD_TRAVEL_DURATION;
 
     groupTiming = {
-      demandDurations: visibleDemand.map(travelDurationFor),
+      demandVisibleDuration,
       hasDemand: Boolean(visibleDemand.length),
       hasSupply: Boolean(visibleSupply.length),
       supplyHeadEnd: supplyHeadEnd || HEAD_TRAVEL_DURATION,
+      supplyVisibleDuration,
     };
 
     animatedStates.forEach((state) => {
@@ -431,6 +454,7 @@
       const state = {
         base: path,
         boundary: flowLayer,
+        createInstance: pulse.createInstance,
         endOffset: pulse.endOffset,
         group: nearestFlowGroup(path),
         label,
