@@ -1,7 +1,12 @@
 (function () {
   const NS = 'http://www.w3.org/2000/svg';
   const INKSCAPE_LABEL = 'http://www.inkscape.org/namespaces/inkscape';
-  const FLOW_DEFAULTS = new Set(['from-grid']);
+  const FLOW_DEFAULTS = new Set([
+    'from-battery',
+    'from-solar',
+    'battery-to-home',
+    'solar-only-to-grid',
+  ]);
   const FORWARD_FLOW_LABELS = new Set([
     'battery-only-to-grid',
     'battery-to-grid',
@@ -19,16 +24,15 @@
   const DEMAND_CREATION_DELAY = 0.15; // compensate size of the inverter
   const DEFAULT_LENGTH = 0.28; 
   const SNAKE_SEGMENTS = 7;
+  const BACKGROUND_FADE_MS = 160;
   const flowStates = new Map();
 
   const svgObject = document.getElementById('energySvg');
   const tree = document.getElementById('tree');
-  const status = document.getElementById('status');
-  const showAllButton = document.getElementById('showAll');
-  const hideAllButton = document.getElementById('hideAll');
-  const restartFlowButton = document.getElementById('restartFlow');
+  const backgroundButtons = document.getElementById('backgroundButtons');
   let animationStartedAt = performance.now();
   let animationFrame = 0;
+  let backgroundTransitionTimeout = 0;
   let isInitializing = false;
   let pathUnitsPerSecond = 1;
   let snakeReferenceLength = 1;
@@ -45,6 +49,9 @@
     node.getAttribute('inkscape:label') ||
     node.id ||
     'unlabelled';
+
+  const findLayer = (svg, label) =>
+    Array.from(svg.querySelectorAll('g')).find((group) => getLabel(group) === label);
 
   const setDisplay = (node, visible) => {
     node.style.display = visible ? 'inline' : 'none';
@@ -85,10 +92,12 @@
 
   const isIdlePath = (label) => label.toLowerCase().startsWith('idle-');
 
+  const isCrossPath = (label) => label.toLowerCase().startsWith('cross-');
+
   const isAnimatedFlowPath = (path) => {
     const label = getLabel(path).toLowerCase();
     if (isIdlePath(label) || label === 'no-grid') return false;
-    if (label.startsWith('cross-')) return false;
+    if (isCrossPath(label)) return false;
     return !isInNoGrid(path);
   };
 
@@ -105,16 +114,175 @@
     return points.join(' ');
   };
 
-  const createPulse = (svg, sourcePath) => {
+  const labelColorForBackground = (label) =>
+    label.trim().toLowerCase().startsWith('dark') ? '#ffffff' : '#000000';
+
+  const canPaint = (element, property, defaultForText = false) => {
+    const inlineValue = element.style[property];
+    const attributeValue = element.getAttribute(property);
+    const paintValue = inlineValue || attributeValue;
+
+    if (paintValue) return paintValue !== 'none';
+    return defaultForText;
+  };
+
+  const applyLabelColor = (labelsLayer, color) => {
+    if (!labelsLayer) return;
+
+    Array.from(labelsLayer.querySelectorAll('*')).forEach((element) => {
+      const tagName = element.tagName.toLowerCase();
+      const isText = tagName === 'text' || tagName === 'tspan';
+
+      element.style.transition = 'fill 160ms ease, stroke 160ms ease';
+      if (canPaint(element, 'fill', isText)) element.style.fill = color;
+      if (canPaint(element, 'stroke')) element.style.stroke = color;
+    });
+  };
+
+  const updateBackgroundButtons = (backgrounds, selectedLabel) => {
+    backgrounds.forEach((background) => {
+      if (!background.button) return;
+      const active = background.label === selectedLabel;
+
+      background.button.classList.toggle('is-active', active);
+      background.button.setAttribute('aria-pressed', String(active));
+    });
+  };
+
+  const backgroundButtonLabel = (label) =>
+    label.replace(/^(dark|light)-/i, '');
+
+  const setBackgroundOpacity = (background, opacity, animated = true) => {
+    background.element.style.transition = animated ? `opacity ${BACKGROUND_FADE_MS}ms ease` : 'none';
+    background.element.style.opacity = String(opacity);
+
+    if (!animated) {
+      background.element.getBoundingClientRect();
+      background.element.style.transition = `opacity ${BACKGROUND_FADE_MS}ms ease`;
+    }
+  };
+
+  const applyBackground = (backgrounds, labelsLayer, selectedLabel, immediate = false) => {
+    const nextBackground = backgrounds.find((background) => background.label === selectedLabel);
+    const currentBackground = backgrounds.find((background) => background.selected);
+
+    if (!nextBackground) return;
+
+    if (backgroundTransitionTimeout) {
+      clearTimeout(backgroundTransitionTimeout);
+      backgroundTransitionTimeout = 0;
+    }
+
+    if (immediate || !currentBackground || currentBackground === nextBackground) {
+      backgrounds.forEach((background) => {
+        background.selected = background === nextBackground;
+        setBackgroundOpacity(background, background.selected ? 1 : 0, !immediate);
+      });
+    } else if (currentBackground.index > nextBackground.index) {
+      backgrounds.forEach((background) => {
+        if (background !== currentBackground && background !== nextBackground) {
+          background.selected = false;
+          setBackgroundOpacity(background, 0, false);
+        }
+      });
+      setBackgroundOpacity(nextBackground, 1, false);
+      setBackgroundOpacity(currentBackground, 0, true);
+      currentBackground.selected = false;
+      nextBackground.selected = true;
+    } else {
+      backgrounds.forEach((background) => {
+        if (background !== currentBackground && background !== nextBackground) {
+          background.selected = false;
+          setBackgroundOpacity(background, 0, false);
+        }
+      });
+      setBackgroundOpacity(currentBackground, 1, false);
+      setBackgroundOpacity(nextBackground, 1, true);
+      currentBackground.selected = false;
+      nextBackground.selected = true;
+      backgroundTransitionTimeout = setTimeout(() => {
+        backgroundTransitionTimeout = 0;
+        if (!nextBackground.selected) return;
+        setBackgroundOpacity(currentBackground, 0, false);
+      }, BACKGROUND_FADE_MS);
+    }
+
+    updateBackgroundButtons(backgrounds, selectedLabel);
+    applyLabelColor(labelsLayer, labelColorForBackground(selectedLabel));
+  };
+
+  const setupBackgroundControls = (svg) => {
+    const bgLayer = findLayer(svg, 'bg');
+    const labelsLayer = findLayer(svg, 'labels');
+    const backgrounds = bgLayer
+      ? Array.from(bgLayer.children)
+          .filter((element) => element.nodeType === 1)
+          .map((element) => ({
+            element,
+            label: getLabel(element),
+            visible: isVisibleByStyle(element),
+          }))
+      : [];
+
+    if (!backgroundButtons || !backgrounds.length) {
+      if (backgroundButtons) backgroundButtons.replaceChildren();
+      return 0;
+    }
+
+    const selectedBackground = backgrounds.find((background) => background.visible) || backgrounds[0];
+
+    backgrounds.forEach((background, index) => {
+      background.index = index;
+      background.selected = background === selectedBackground;
+      background.element.style.display = 'inline';
+      background.element.style.opacity = background === selectedBackground ? '1' : '0';
+      background.element.style.pointerEvents = 'none';
+      background.element.style.transition = `opacity ${BACKGROUND_FADE_MS}ms ease`;
+    });
+
+    backgroundButtons.replaceChildren(
+      ...backgrounds.map((background) => {
+        const button = document.createElement('button');
+
+        button.type = 'button';
+        button.textContent = backgroundButtonLabel(background.label);
+        button.setAttribute('aria-pressed', 'false');
+        button.addEventListener('click', () => {
+          applyBackground(backgrounds, labelsLayer, background.label);
+        });
+        background.button = button;
+
+        return button;
+      })
+    );
+
+    applyBackground(backgrounds, labelsLayer, selectedBackground.label, true);
+    return backgrounds.length;
+  };
+
+  const matrixToTransform = (matrix) =>
+    `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`;
+
+  const getTransformIntoLayer = (sourcePath, targetLayer) => {
+    const sourceMatrix = sourcePath.getCTM?.();
+    const layerMatrix = targetLayer.getCTM?.();
+
+    if (!sourceMatrix || !layerMatrix) return null;
+    return layerMatrix.inverse().multiply(sourceMatrix);
+  };
+
+  const createPulse = (svg, sourcePath, targetLayer) => {
     const label = getLabel(sourcePath);
     const length = Math.max(sourcePath.getTotalLength(), 1);
     const pulseGroup = svg.ownerDocument.createElementNS(NS, 'g');
     const isForward = FORWARD_FLOW_LABELS.has(label);
     const segmentTemplate = sourcePath.cloneNode(false);
+    const sourceTransform = getTransformIntoLayer(sourcePath, targetLayer);
 
     segmentTemplate.setAttribute('d', isForward ? sourcePath.getAttribute('d') : buildReversedPathData(sourcePath, length));
     segmentTemplate.removeAttribute('id');
     segmentTemplate.removeAttribute('inkscape:label');
+    segmentTemplate.removeAttribute('transform');
 
     const createInstance = () => {
       const instanceGroup = svg.ownerDocument.createElementNS(NS, 'g');
@@ -125,12 +293,14 @@
 
       for (let index = 0; index < SNAKE_SEGMENTS; index += 1) {
         const segment = segmentTemplate.cloneNode(false);
-        const fade = index / (SNAKE_SEGMENTS - 1);
+        const isHead = index === SNAKE_SEGMENTS - 1;
+        const fade = index / Math.max(SNAKE_SEGMENTS - 2, 1);
 
         segment.style.display = 'inline';
         segment.style.filter = 'none';
-        segment.style.opacity = `${0.12 + fade * 0.88}`;
+        segment.style.opacity = isHead ? '1' : `${0.12 + fade * 0.5}`;
         segment.style.pointerEvents = 'none';
+        segment.style.strokeOpacity = '1';
         instanceGroup.appendChild(segment);
         segments.push({ element: segment, fadeIndex: index });
       }
@@ -146,6 +316,7 @@
     pulseGroup.style.filter = 'none';
     pulseGroup.style.opacity = '1';
     pulseGroup.style.pointerEvents = 'none';
+    if (sourceTransform) pulseGroup.setAttribute('transform', matrixToTransform(sourceTransform));
 
     return {
       createInstance,
@@ -350,6 +521,167 @@
     if (!isInitializing) updatePulseTiming();
   };
 
+  const batteryDirectionForState = (state) => {
+    if (!state.pulse) return null;
+    if (
+      state.label === 'from-battery' ||
+      state.label.startsWith('battery-to-') ||
+      state.label.startsWith('battery-only-to-')
+    ) return 'fromBattery';
+    if (state.label.endsWith('-to-battery')) return 'toBattery';
+    return null;
+  };
+
+  const gridDirectionForState = (state) => {
+    if (!state.pulse) return null;
+    if (state.label === 'from-grid') return 'fromGrid';
+    if (state.label.startsWith('grid-to-')) return 'fromGrid';
+    if (state.label.endsWith('-to-grid')) return 'toGrid';
+    return null;
+  };
+
+  const clearOppositeDirectionalFlows = (state, directionForState, directionPairs) => {
+    const direction = directionForState(state);
+
+    if (!direction) return;
+
+    const oppositeDirection = directionPairs[direction];
+    flowStates.forEach((otherState) => {
+      if (otherState !== state && otherState.visible && directionForState(otherState) === oppositeDirection) {
+        applyFlowVisibilityWithGridExportCoupling(otherState, false);
+      }
+    });
+  };
+
+  const clearDirectionalConflicts = (state) => {
+    clearOppositeDirectionalFlows(state, batteryDirectionForState, {
+      fromBattery: 'toBattery',
+      toBattery: 'fromBattery',
+    });
+    clearOppositeDirectionalFlows(state, gridDirectionForState, {
+      fromGrid: 'toGrid',
+      toGrid: 'fromGrid',
+    });
+  };
+
+  const sourceLabelForOutputState = (state) => {
+    if (state.label.startsWith('battery-to-') || state.label.startsWith('battery-only-to-')) return 'from-battery';
+    if (state.label.startsWith('grid-to-')) return 'from-grid';
+    if (state.label.startsWith('solar-to-') || state.label.startsWith('solar-only-to-')) return 'from-solar';
+    return null;
+  };
+
+  const applySourceForOutput = (state) => {
+    const sourceLabel = sourceLabelForOutputState(state);
+
+    if (!sourceLabel) return;
+
+    const sourceState = flowStates.get(sourceLabel);
+    if (!sourceState) return;
+
+    clearDirectionalConflicts(sourceState);
+    applyFlowVisibility(sourceState, true);
+  };
+
+  const isSharedGridExportState = (state) =>
+    state.label === 'solar-to-grid' || state.label === 'battery-to-grid';
+
+  const isOnlyGridExportState = (state) =>
+    state.label.endsWith('-only-to-grid');
+
+  const sharedGridExportStates = () =>
+    ['solar-to-grid', 'battery-to-grid']
+      .map((label) => flowStates.get(label))
+      .filter(Boolean);
+
+  const applyFlowVisibilityWithGridExportCoupling = (state, visible) => {
+    if (isSharedGridExportState(state)) {
+      sharedGridExportStates().forEach((sharedState) => applyFlowVisibility(sharedState, visible));
+      return;
+    }
+
+    applyFlowVisibility(state, visible);
+  };
+
+  const isGridUnavailableState = (state) =>
+    state.label === 'no-grid' || state.label.startsWith('cross-');
+
+  const isGridAvailableState = (state) =>
+    state.label === 'from-grid' ||
+    state.label === 'idle-grid' ||
+    state.label.startsWith('grid-to-') ||
+    state.label.endsWith('-to-grid');
+
+  const gridUnavailableStates = () =>
+    Array.from(flowStates.values()).filter(isGridUnavailableState);
+
+  const applyGridUnavailableVisibility = (visible) => {
+    gridUnavailableStates().forEach((gridUnavailableState) => {
+      applyFlowVisibility(gridUnavailableState, visible);
+    });
+  };
+
+  const clearGridAvailableStates = () => {
+    flowStates.forEach((otherState) => {
+      if (isGridAvailableState(otherState)) applyFlowVisibilityWithGridExportCoupling(otherState, false);
+    });
+  };
+
+  const applyGridUnavailableSelection = (state, visible) => {
+    if (isGridUnavailableState(state)) {
+      applyGridUnavailableVisibility(visible);
+      if (visible) clearGridAvailableStates();
+      return true;
+    }
+
+    if (visible && isGridAvailableState(state)) {
+      applyGridUnavailableVisibility(false);
+    }
+
+    return false;
+  };
+
+  const applyGridExportSelection = (state, visible) => {
+    if (isSharedGridExportState(state)) {
+      sharedGridExportStates().forEach((sharedState) => {
+        if (visible) clearDirectionalConflicts(sharedState);
+        applyFlowVisibility(sharedState, visible);
+        if (visible) applySourceForOutput(sharedState);
+      });
+
+      if (visible) {
+        flowStates.forEach((otherState) => {
+          if (isOnlyGridExportState(otherState)) applyFlowVisibility(otherState, false);
+        });
+      }
+
+      return true;
+    }
+
+    if (visible && isOnlyGridExportState(state)) {
+      flowStates.forEach((otherState) => {
+        if (otherState !== state && (isOnlyGridExportState(otherState) || isSharedGridExportState(otherState))) {
+          applyFlowVisibility(otherState, false);
+        }
+      });
+      return false;
+    }
+
+    return false;
+  };
+
+  const applyFlowSelection = (state, visible) => {
+    if (applyGridUnavailableSelection(state, visible)) return;
+    if (applyGridExportSelection(state, visible)) return;
+
+    if (visible) {
+      clearDirectionalConflicts(state);
+      applySourceForOutput(state);
+    }
+
+    applyFlowVisibility(state, visible);
+  };
+
   const createTreeItem = (groupName, state) => {
     const item = document.createElement('li');
     const label = document.createElement('label');
@@ -358,7 +690,7 @@
 
     checkbox.type = 'checkbox';
     checkbox.checked = state.visible;
-    checkbox.addEventListener('change', () => applyFlowVisibility(state, checkbox.checked));
+    checkbox.addEventListener('change', () => applyFlowSelection(state, checkbox.checked));
     state.checkbox = checkbox;
 
     text.textContent = state.pulse ? state.label : `${state.label} (static)`;
@@ -391,6 +723,7 @@
       const summary = document.createElement('summary');
       const list = document.createElement('ul');
 
+      details.open = true;
       summary.textContent = groupName;
       groupStates
         .sort((a, b) => a.label.localeCompare(b.label))
@@ -416,10 +749,10 @@
     isInitializing = true;
     const doc = svgObject.contentDocument;
     const svg = doc && doc.querySelector('svg');
-    const flowLayer = svg && Array.from(svg.querySelectorAll('g')).find((group) => getLabel(group) === 'energy-flow-select-many');
+    const flowLayer = svg && findLayer(svg, 'energy-flow-select-many');
 
     if (!svg || !flowLayer) {
-      status.textContent = 'SVG flow layer was not found.';
+      console.warn('SVG flow layer was not found.');
       isInitializing = false;
       return;
     }
@@ -427,6 +760,7 @@
     svg.style.width = '100%';
     svg.style.height = '100%';
     svg.style.display = 'block';
+    setupBackgroundControls(svg);
 
     flowStates.clear();
     doc.getElementById('energy-flow-animation-layer')?.remove();
@@ -446,7 +780,7 @@
 
     const states = flowPaths.map((path) => {
       const label = getLabel(path);
-      const pulse = createPulse(svg, path);
+      const pulse = createPulse(svg, path, animationLayer);
       const visible = FLOW_DEFAULTS.has(label);
       applyIdleBaseStyle(path, idlePaths);
       animationLayer.appendChild(pulse.element);
@@ -487,7 +821,7 @@
           group: isInNoGrid(path) ? 'no-grid' : nearestFlowGroup(path),
           label,
           pulse: null,
-          visible: isEffectivelyVisible(path, flowLayer),
+          visible: !isIdlePath(label) && !isCrossPath(label) && isEffectivelyVisible(path, flowLayer),
         };
 
         flowStates.set(label, state);
@@ -501,18 +835,7 @@
     restartPulseAnimations();
     if (animationFrame) cancelAnimationFrame(animationFrame);
     animationFrame = requestAnimationFrame(renderFlow);
-    status.textContent = `${flowPaths.length} animated flow curves, ${states.length - flowPaths.length} static curves.`;
   };
-
-  showAllButton.addEventListener('click', () => {
-    flowStates.forEach((state) => applyFlowVisibility(state, true));
-  });
-
-  hideAllButton.addEventListener('click', () => {
-    flowStates.forEach((state) => applyFlowVisibility(state, false));
-  });
-
-  restartFlowButton.addEventListener('click', restartPulseAnimations);
 
   svgObject.addEventListener('load', initialize);
 })();

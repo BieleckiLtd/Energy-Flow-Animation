@@ -54,8 +54,9 @@
       line-height: 1.45;
     }
 
-    .toolbar {
-      display: flex;
+    .background-controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
       gap: 8px;
       margin-bottom: 14px;
     }
@@ -74,6 +75,12 @@
 
     button:hover {
       border-color: #a9b4c4;
+    }
+
+    button.is-active {
+      border-color: var(--accent);
+      color: #0b4eb3;
+      background: #eef6ff;
     }
 
     .tree {
@@ -152,12 +159,6 @@
       min-height: calc(100vh - 42px);
     }
 
-    .status {
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-
     @media (max-width: 820px) {
       .app {
         grid-template-columns: 1fr;
@@ -182,15 +183,8 @@
 <body>
   <main class="app">
     <aside class="sidebar">
-      <h1>Energy Flow</h1>
-      <p>Toggle individual visible flow curves. Idle and no-grid paths remain static.</p>
-      <div class="toolbar">
-        <button type="button" id="showAll">Show all</button>
-        <button type="button" id="hideAll">Hide all</button>
-        <button type="button" id="restartFlow">Restart</button>
-      </div>
+      <div class="background-controls" id="backgroundButtons" aria-label="Background"></div>
       <ul class="tree" id="tree" aria-label="Energy flow curve tree"></ul>
-      <div class="status" id="status">Loading SVG...</div>
     </aside>
     <section class="stage" aria-label="Animated energy flow diagram">
       <div class="svg-frame">
