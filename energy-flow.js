@@ -28,6 +28,8 @@
   const flowStates = new Map();
 
   const svgObject = document.getElementById('energySvg');
+  const svgFrame = document.querySelector('.svg-frame');
+  const fullscreenToggle = document.getElementById('fullscreenToggle');
   const tree = document.getElementById('tree');
   const backgroundButtons = document.getElementById('backgroundButtons');
   let animationStartedAt = performance.now();
@@ -52,6 +54,37 @@
 
   const findLayer = (svg, label) =>
     Array.from(svg.querySelectorAll('g')).find((group) => getLabel(group) === label);
+
+  const updateFullscreenToggle = () => {
+    if (!fullscreenToggle || !svgFrame) return;
+
+    const isFullscreen = document.fullscreenElement === svgFrame;
+    fullscreenToggle.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+    fullscreenToggle.setAttribute('title', isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+    fullscreenToggle.classList.toggle('is-fullscreen', isFullscreen);
+  };
+
+  const setupFullscreenToggle = () => {
+    if (!fullscreenToggle || !svgFrame || !svgFrame.requestFullscreen) {
+      if (fullscreenToggle) fullscreenToggle.hidden = true;
+      return;
+    }
+
+    fullscreenToggle.addEventListener('click', async () => {
+      try {
+        if (document.fullscreenElement === svgFrame) {
+          await document.exitFullscreen();
+        } else {
+          await svgFrame.requestFullscreen();
+        }
+      } catch (error) {
+        console.warn('Fullscreen toggle failed.', error);
+      }
+    });
+
+    document.addEventListener('fullscreenchange', updateFullscreenToggle);
+    updateFullscreenToggle();
+  };
 
   const setDisplay = (node, visible) => {
     node.style.display = visible ? 'inline' : 'none';
@@ -838,4 +871,5 @@
   };
 
   svgObject.addEventListener('load', initialize);
+  setupFullscreenToggle();
 })();

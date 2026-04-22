@@ -142,6 +142,7 @@
 
     .svg-frame {
       display: grid;
+      position: relative;
       min-height: calc(100vh - 40px);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -151,6 +152,55 @@
         #ffffff;
       background-size: 24px 24px;
       overflow: hidden;
+    }
+
+    .fullscreen-toggle {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 2;
+      display: inline-grid;
+      place-items: center;
+      width: 38px;
+      min-height: 38px;
+      padding: 0;
+      color: #17202a;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16);
+      backdrop-filter: blur(8px);
+    }
+
+    .fullscreen-toggle svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+
+    .fullscreen-toggle .fullscreen-exit-icon,
+    .fullscreen-toggle.is-fullscreen .fullscreen-enter-icon {
+      display: none;
+    }
+
+    .fullscreen-toggle.is-fullscreen .fullscreen-exit-icon {
+      display: inline;
+    }
+
+    .svg-frame:fullscreen {
+      width: 100vw;
+      height: 100vh;
+      min-height: 100vh;
+      border: 0;
+      border-radius: 0;
+      background-color: #ffffff;
+    }
+
+    .svg-frame:fullscreen object {
+      min-height: 100vh;
     }
 
     object {
@@ -188,6 +238,12 @@
     </aside>
     <section class="stage" aria-label="Animated energy flow diagram">
       <div class="svg-frame">
+        <button class="fullscreen-toggle" id="fullscreenToggle" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path class="fullscreen-enter-icon" d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"></path>
+            <path class="fullscreen-exit-icon" d="M9 4v5H4M15 4v5h5M9 20v-5H4M20 15h-5v5"></path>
+          </svg>
+        </button>
         <object id="energySvg" type="image/svg+xml" data="domek energy flow.svg" aria-label="Energy flow SVG"></object>
       </div>
     </section>
