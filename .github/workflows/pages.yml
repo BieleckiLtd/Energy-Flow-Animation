@@ -34,7 +34,11 @@ jobs:
           cp index.html dist/
           cp energy-flow.js dist/
           cp "domek energy flow.svg" dist/
-          cp "energy flow.svg" dist/
+          cp fair.png dist/
+          cp night.png dist/
+          cp golden.png dist/
+          cp light-rain.png dist/
+          cp dusk.png dist/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
